@@ -1,9 +1,9 @@
 import bcrypt from 'bcryptjs';
-import mysql from 'mysql2/promise';
+import { Pool } from 'mysql2/promise';
 import { RankingEntry, User } from '../types/database';
 
 // Configuración de la conexión a MySQL
-const pool = mysql.createPool({
+const pool: Pool = mysql.createPool({
   host: 'starmarkagency.com',
   user: 'starmark_catgame',
   password: 'CONTRASEÑAMUYLARGA',
