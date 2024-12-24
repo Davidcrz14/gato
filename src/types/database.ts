@@ -4,7 +4,7 @@ export interface User {
   password: string; // Será almacenado como hash
   createdAt: string;
 }
-i
+
 export interface GameResult {
   id: number;
   userId: number;
