@@ -86,6 +86,14 @@ export const saveGameResult = async (userId: number, difficulty: string, won: bo
   }
 };
 
+interface GameResultWithUser {
+  userId: number;
+  won: boolean;
+  users: {
+    username: string;
+  };
+}
+
 // Funciones de ranking
 export const getRankingByDifficulty = async (difficulty: string): Promise<RankingEntry[]> => {
   try {
@@ -94,11 +102,14 @@ export const getRankingByDifficulty = async (difficulty: string): Promise<Rankin
       .select(`
         userId,
         won,
-        users:users(username)
+        users (
+          username
+        )
       `)
-      .eq('difficulty', difficulty);
+      .eq('difficulty', difficulty) as { data: GameResultWithUser[] | null, error: any };
 
     if (error) throw error;
+    if (!results) return [];
 
     const userStats = new Map<number, { username: string; wins: number; total: number }>();
 
