@@ -1,31 +1,48 @@
 import bcrypt from 'bcryptjs';
-import { equalTo, get, orderByChild, push, query, ref, set } from 'firebase/database';
-import { db } from '../config/firebase';
-import { GameResult, RankingEntry, User } from '../types/database';
+import mysql from 'mysql2/promise';
+import { RankingEntry, User } from '../types/database';
+
+// Configuración de la conexión a MySQL
+const pool = mysql.createPool({
+  host: 'starmarkagency.com',
+  user: 'starmark_catgame',
+  password: 'CONTRASEÑAMUYLARGA',
+  database: 'starmark_catgame',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
 // Funciones de usuario
 export const createUser = async (username: string, password: string): Promise<User | null> => {
   try {
     // Verificar si el usuario ya existe
-    const usersRef = ref(db, 'users');
-    const snapshot = await get(query(usersRef, orderByChild('username'), equalTo(username)));
+    const [existingUsers] = await pool.execute(
+      'SELECT * FROM users WHERE username = ?',
+      [username]
+    );
 
-    if (snapshot.exists()) {
+    if ((existingUsers as any[]).length > 0) {
       return null;
     }
 
     // Hash de la contraseña
     const hashedPassword = await bcrypt.hash(password, 10);
+    const createdAt = new Date().toISOString();
 
-    const newUser: User = {
-      id: Date.now(),
+    const [result] = await pool.execute(
+      'INSERT INTO users (username, password, createdAt) VALUES (?, ?, ?)',
+      [username, hashedPassword, createdAt]
+    );
+
+    const user: User = {
+      id: (result as any).insertId,
       username,
       password: hashedPassword,
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
-    await set(ref(db, `users/${newUser.id}`), newUser);
-    return newUser;
+    return user;
   } catch (error) {
     console.error('Error creating user:', error);
     return null;
@@ -34,16 +51,14 @@ export const createUser = async (username: string, password: string): Promise<Us
 
 export const validateUser = async (username: string, password: string): Promise<User | null> => {
   try {
-    const usersRef = ref(db, 'users');
-    const snapshot = await get(query(usersRef, orderByChild('username'), equalTo(username)));
+    const [users] = await pool.execute(
+      'SELECT * FROM users WHERE username = ?',
+      [username]
+    );
 
-    if (!snapshot.exists()) return null;
-
-    const users = Object.values(snapshot.val()) as User[];
-    const user = users[0];
-
-    if (await bcrypt.compare(password, user.password)) {
-      return user;
+    const user = (users as any[])[0];
+    if (user && await bcrypt.compare(password, user.password)) {
+      return user as User;
     }
     return null;
   } catch (error) {
@@ -55,16 +70,11 @@ export const validateUser = async (username: string, password: string): Promise<
 // Funciones de juego
 export const saveGameResult = async (userId: number, difficulty: string, won: boolean): Promise<boolean> => {
   try {
-    const gameResult: GameResult = {
-      id: Date.now(),
-      userId,
-      difficulty: difficulty as 'easy' | 'medium' | 'hard',
-      won,
-      playedAt: new Date().toISOString()
-    };
-
-    const newGameRef = push(ref(db, 'gameResults'));
-    await set(newGameRef, gameResult);
+    const playedAt = new Date().toISOString();
+    await pool.execute(
+      'INSERT INTO game_results (userId, difficulty, won, playedAt) VALUES (?, ?, ?, ?)',
+      [userId, difficulty, won, playedAt]
+    );
     return true;
   } catch (error) {
     console.error('Error saving game result:', error);
@@ -75,48 +85,26 @@ export const saveGameResult = async (userId: number, difficulty: string, won: bo
 // Funciones de ranking
 export const getRankingByDifficulty = async (difficulty: string): Promise<RankingEntry[]> => {
   try {
-    const gameResultsRef = ref(db, 'gameResults');
-    const usersRef = ref(db, 'users');
+    const [rows] = await pool.execute(`
+      SELECT
+        u.username,
+        COUNT(CASE WHEN gr.won = 1 THEN 1 END) as wins,
+        COUNT(*) as totalGames,
+        ROUND((COUNT(CASE WHEN gr.won = 1 THEN 1 END) / COUNT(*)) * 100) as winRate
+      FROM users u
+      JOIN game_results gr ON u.id = gr.userId
+      WHERE gr.difficulty = ?
+      GROUP BY u.id, u.username
+      ORDER BY wins DESC, winRate DESC
+      LIMIT 10
+    `, [difficulty]);
 
-    const [gameSnapshot, usersSnapshot] = await Promise.all([
-      get(query(gameResultsRef, orderByChild('difficulty'), equalTo(difficulty))),
-      get(usersRef)
-    ]);
-
-    const users = usersSnapshot.val() || {};
-    const gameResults = gameSnapshot.val() || {};
-
-    const userStats = new Map<number, { wins: number; total: number }>();
-
-    // Agrupar resultados por usuario
-    Object.values(gameResults).forEach((result: any) => {
-      if (result && typeof result === 'object') {
-        const gameResult = result as GameResult;
-        const stats = userStats.get(gameResult.userId) || { wins: 0, total: 0 };
-        stats.total++;
-        if (gameResult.won) stats.wins++;
-        userStats.set(gameResult.userId, stats);
-      }
-    });
-
-    // Crear ranking
-    const rankings: RankingEntry[] = [];
-    userStats.forEach((stats, userId) => {
-      const user = users[userId];
-      if (user) {
-        rankings.push({
-          username: user.username,
-          wins: stats.wins,
-          totalGames: stats.total,
-          winRate: Math.round((stats.wins / stats.total) * 100)
-        });
-      }
-    });
-
-    // Ordenar por victorias y winRate
-    return rankings.sort((a, b) =>
-      b.wins - a.wins || b.winRate - a.winRate
-    ).slice(0, 10);
+    return (rows as any[]).map(row => ({
+      username: row.username,
+      wins: row.wins,
+      totalGames: row.totalGames,
+      winRate: row.winRate
+    }));
   } catch (error) {
     console.error('Error getting rankings:', error);
     return [];
