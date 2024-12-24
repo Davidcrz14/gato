@@ -1,27 +1,22 @@
-import Dexie, { Table } from 'dexie';
-import { User, GameResult, RankingEntry } from '../types/database';
+import { createClient } from '@supabase/supabase-js';
 import bcrypt from 'bcryptjs';
+import { GameResult, RankingEntry, User } from '../types/database';
 
-class GameDatabase extends Dexie {
-  users!: Table<User>;
-  gameResults!: Table<GameResult>;
-
-  constructor() {
-    super('GameDatabase');
-    this.version(1).stores({
-      users: '++id, username, password, createdAt',
-      gameResults: '++id, userId, difficulty, won, playedAt'
-    });
-  }
-}
-
-const db = new GameDatabase();
+const supabase = createClient(
+  'https://zpffqunyntmssjfjjnji.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpwZmZxdW55bnRtc3NqZmpqbmppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUwMDU5ODksImV4cCI6MjA1MDU4MTk4OX0.PV-FJ75T25iWQePgplJimJb6hkVoUi9z5q84QSkvDu8'
+);
 
 // Funciones de usuario
 export const createUser = async (username: string, password: string): Promise<User | null> => {
   try {
     // Verificar si el usuario ya existe
-    const existingUser = await db.users.where('username').equals(username).first();
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select()
+      .eq('username', username)
+      .single();
+
     if (existingUser) {
       return null;
     }
@@ -30,14 +25,20 @@ export const createUser = async (username: string, password: string): Promise<Us
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user: User = {
-      id: Date.now(), // Usar timestamp como ID
+      id: Date.now(),
       username,
       password: hashedPassword,
       createdAt: new Date().toISOString()
     };
 
-    await db.users.add(user);
-    return user;
+    const { data, error } = await supabase
+      .from('users')
+      .insert([user])
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   } catch (error) {
     console.error('Error creating user:', error);
     return null;
@@ -46,7 +47,12 @@ export const createUser = async (username: string, password: string): Promise<Us
 
 export const validateUser = async (username: string, password: string): Promise<User | null> => {
   try {
-    const user = await db.users.where('username').equals(username).first();
+    const { data: user } = await supabase
+      .from('users')
+      .select()
+      .eq('username', username)
+      .single();
+
     if (user && await bcrypt.compare(password, user.password)) {
       return user;
     }
@@ -68,7 +74,11 @@ export const saveGameResult = async (userId: number, difficulty: string, won: bo
       playedAt: new Date().toISOString()
     };
 
-    await db.gameResults.add(gameResult);
+    const { error } = await supabase
+      .from('game_results')
+      .insert([gameResult]);
+
+    if (error) throw error;
     return true;
   } catch (error) {
     console.error('Error saving game result:', error);
@@ -79,36 +89,39 @@ export const saveGameResult = async (userId: number, difficulty: string, won: bo
 // Funciones de ranking
 export const getRankingByDifficulty = async (difficulty: string): Promise<RankingEntry[]> => {
   try {
-    const allResults = await db.gameResults
-      .where('difficulty')
-      .equals(difficulty)
-      .toArray();
+    const { data: results, error } = await supabase
+      .from('game_results')
+      .select(`
+        userId,
+        won,
+        users:users(username)
+      `)
+      .eq('difficulty', difficulty);
 
-    const userResults = new Map<number, { wins: number; total: number }>();
+    if (error) throw error;
 
-    // Agrupar resultados por usuario
-    allResults.forEach(result => {
-      const stats = userResults.get(result.userId) || { wins: 0, total: 0 };
+    const userStats = new Map<number, { username: string; wins: number; total: number }>();
+
+    results.forEach(result => {
+      const userId = result.userId;
+      const stats = userStats.get(userId) || {
+        username: result.users.username,
+        wins: 0,
+        total: 0
+      };
+
       stats.total++;
       if (result.won) stats.wins++;
-      userResults.set(result.userId, stats);
+      userStats.set(userId, stats);
     });
 
-    // Obtener nombres de usuario y calcular estadísticas
-    const rankings: RankingEntry[] = [];
-    for (const [userId, stats] of userResults.entries()) {
-      const user = await db.users.get(userId);
-      if (user) {
-        rankings.push({
-          username: user.username,
-          wins: stats.wins,
-          totalGames: stats.total,
-          winRate: Math.round((stats.wins / stats.total) * 100)
-        });
-      }
-    }
+    const rankings: RankingEntry[] = Array.from(userStats.values()).map(stats => ({
+      username: stats.username,
+      wins: stats.wins,
+      totalGames: stats.total,
+      winRate: Math.round((stats.wins / stats.total) * 100)
+    }));
 
-    // Ordenar por victorias y winRate
     return rankings.sort((a, b) =>
       b.wins - a.wins || b.winRate - a.winRate
     ).slice(0, 10);
@@ -118,7 +131,6 @@ export const getRankingByDifficulty = async (difficulty: string): Promise<Rankin
   }
 };
 
-// Función para limpiar caracteres especiales
 export const sanitizeInput = (input: string): string => {
   return input.replace(/[^a-zA-Z0-9_]/g, '');
 };

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { RankingEntry } from '../../types/database';
+import React, { useEffect, useState } from 'react';
 import { getRankingByDifficulty } from '../../services/databaseService';
+import { RankingEntry } from '../../types/database';
 
 interface RankingTableProps {
   difficulty: string;
